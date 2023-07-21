@@ -149,11 +149,11 @@ bool flash_stm32_valid_range(const struct device *dev, off_t offset,
 		}
 	}
 
-	return (!write || (offset % 8 == 0 && len % 8 == 0U)) &&
+	return (!write || (offset % 16 == 0 && len % 16 == 0U)) &&
 		flash_stm32_range_exists(dev, offset, len);
 }
 
-static int write_dword(const struct device *dev, off_t offset, uint64_t val)
+static int write_qword(const struct device *dev, off_t offset, uint64_t val1, uint64_t val2)
 {
 	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
 	volatile uint32_t *flash = (uint32_t *)(offset
@@ -173,15 +173,16 @@ static int write_dword(const struct device *dev, off_t offset, uint64_t val)
 		return rc;
 	}
 
-	/* Check if this double word is erased and value isn't 0.
+	/* Check if this quad word is erased and value isn't 0.
 	 *
 	 * It is allowed to write only zeros over an already written dword
 	 * See 6.3.7 in STM32L5 reference manual.
 	 * See 7.3.7 in STM32U5 reference manual.
 	 */
-	if ((flash[0] != 0xFFFFFFFFUL ||
-	     flash[1] != 0xFFFFFFFFUL) && val != 0UL) {
-		LOG_ERR("Word at offs %ld not erased", (long)offset);
+	if ((flash[0] != 0xFFFFFFFFUL || flash[1] != 0xFFFFFFFFUL ||
+	     flash[2] != 0xFFFFFFFFUL || flash[3] != 0xFFFFFFFFUL) &&
+			(val1 != 0UL || val2 != 0)) {
+		LOG_ERR("Quad word at offs %ld not erased", (long)offset);
 		return -EIO;
 	}
 
@@ -192,8 +193,10 @@ static int write_dword(const struct device *dev, off_t offset, uint64_t val)
 	tmp = regs->NSCR;
 
 	/* Perform the data write operation at the desired memory address */
-	flash[0] = (uint32_t)val;
-	flash[1] = (uint32_t)(val >> 32);
+	flash[0] = (uint32_t)val1;
+	flash[1] = (uint32_t)(val1 >> 32);
+	flash[2] = (uint32_t)val2;
+	flash[3] = (uint32_t)(val2 >> 32);
 
 	/* Wait until the NSBSY bit is cleared */
 	rc = flash_stm32_wait_flash_idle(dev);
@@ -341,8 +344,10 @@ int flash_stm32_write_range(const struct device *dev, unsigned int offset,
 		}
 	}
 
-	for (i = 0; i < len; i += 8, offset += 8) {
-		rc = write_dword(dev, offset, ((const uint64_t *) data)[i>>3]);
+	for (i = 0; i < len; i += 16, offset += 16) {
+		rc = write_qword(dev, offset,
+				 ((const uint64_t *) data)[i>>3],
+				 ((const uint64_t *) data)[(i + 8)>>3]);
 		if (rc < 0) {
 			break;
 		}
